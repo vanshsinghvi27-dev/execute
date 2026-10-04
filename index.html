@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Paper bot</title>
+<style>
+ body{font-family:system-ui,sans-serif;margin:0;padding:14px;background:#0f1115;color:#eee;max-width:720px;margin:auto}
+ h2{margin:6px 0 2px} .sub{color:#9aa0aa;font-size:13px}
+ .card{background:#1a1d24;border-radius:12px;padding:12px;margin:10px 0}
+ .row{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+ .name{font-weight:700}.desc{color:#9aa0aa;font-size:12px}.held{color:#9aa0aa;font-size:12px;margin-top:4px}
+ .net{font-size:20px;font-weight:800}.pos{color:#4ade80}.neg{color:#f87171}
+ .warn{background:#3b2a12;color:#fbbf24;border-radius:10px;padding:10px;margin:10px 0;font-size:14px}
+ li{font-size:12px;margin:4px 0;color:#c9ced6;word-break:break-word} ul{padding-left:18px}
+</style></head><body>
+<h2>Paper trading bot <span class="sub">(fake money)</span></h2>
+<div class="sub" id="status">Loading...</div>
+<div id="warn"></div>
+<div id="accts"></div>
+<h4>Recent activity</h4><ul id="ev"></ul>
+<p class="sub">Refreshes every 20 seconds. Fake money only. One day proves little.</p>
+<script>
+const TOPIC = "papertrade-data-03dc95b0c0fe";
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const money = n => (n >= 0 ? "+" : "-") + "Rs " + Math.abs(Math.round(n)).toLocaleString("en-IN");
+
+async function latest(since) {
+  const r = await fetch("https://ntfy.sh/" + TOPIC + "/json?poll=1&since=" + since, {cache: "no-store"});
+  const lines = (await r.text()).trim().split("\n").filter(Boolean).map(l => JSON.parse(l)).filter(m => m.event === "message");
+  return lines.length ? lines[lines.length - 1] : null;
+}
+
+async function load() {
+  try {
+    let m = await latest("latest");
+    if (!m) m = await latest("30m");
+    if (!m) { document.getElementById("status").textContent = "No data yet. Is the bot running?"; return; }
+    const d = JSON.parse(m.message);
+    const ageMin = (Date.now() / 1000 - m.time) / 60;
+    document.getElementById("status").innerHTML =
+      "<b>" + esc(d.phase) + "</b> &middot; live data " + d.fresh + "/" + d.n + " &middot; bot time " + esc(d.t) +
+      " &middot; " + esc(d.d);
+    document.getElementById("warn").innerHTML = ageMin > 6
+      ? '<div class="warn">Last update was ' + Math.round(ageMin) + ' min ago. The bot may have stopped, or the laptop is asleep/offline (or the day has finished).</div>' : "";
+    document.getElementById("accts").innerHTML = d.accts.map(a =>
+      '<div class="card"><div class="row"><div><div class="name">' + esc(a.name) + '</div><div class="desc">' + esc(a.desc) +
+      '</div></div><div class="net ' + (a.net > 0 ? "pos" : a.net < 0 ? "neg" : "") + '">' + money(a.net) + '</div></div>' +
+      '<div class="held">closed trades: ' + a.trades + ' &middot; holding: ' + esc(a.held || "nothing") +
+      (a.halt ? " &middot; stopped by loss limit" : "") + '</div></div>').join("");
+    document.getElementById("ev").innerHTML = (d.ev || []).slice().reverse().map(e => "<li>" + esc(e) + "</li>").join("") || "<li>nothing yet</li>";
+  } catch (e) {
+    document.getElementById("status").textContent = "Could not load data (" + e.message + "). Will retry.";
+  }
+}
+load(); setInterval(load, 20000);
+</script></body></html>
