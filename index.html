@@ -3,53 +3,153 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Paper bot</title>
 <style>
- body{font-family:system-ui,sans-serif;margin:0;padding:14px;background:#0f1115;color:#eee;max-width:720px;margin:auto}
- h2{margin:6px 0 2px} .sub{color:#9aa0aa;font-size:13px}
+ body{font-family:system-ui,sans-serif;margin:0;padding:14px;background:#0f1115;color:#eee;max-width:760px;margin:auto}
+ h2{margin:6px 0 2px} h4{margin:18px 0 6px} .sub{color:#9aa0aa;font-size:13px}
  .card{background:#1a1d24;border-radius:12px;padding:12px;margin:10px 0}
  .row{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
- .name{font-weight:700}.desc{color:#9aa0aa;font-size:12px}.held{color:#9aa0aa;font-size:12px;margin-top:4px}
- .net{font-size:20px;font-weight:800}.pos{color:#4ade80}.neg{color:#f87171}
+ .name{font-weight:700}.desc{color:#9aa0aa;font-size:12px}
+ .net{font-size:22px;font-weight:800}.pos{color:#4ade80}.neg{color:#f87171}
+ .grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;margin-top:10px;font-size:13px}
+ .grid span{color:#9aa0aa;display:block;font-size:11px}
+ table{width:100%;border-collapse:collapse;margin-top:10px;font-size:12px}
+ td,th{padding:4px 2px;text-align:right;border-top:1px solid #2a2e37} th{color:#9aa0aa;font-weight:500} td:first-child,th:first-child{text-align:left}
  .warn{background:#3b2a12;color:#fbbf24;border-radius:10px;padding:10px;margin:10px 0;font-size:14px}
+ canvas{width:100%;height:240px;display:block}
+ .legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;margin-top:6px}
+ .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px}
  li{font-size:12px;margin:4px 0;color:#c9ced6;word-break:break-word} ul{padding-left:18px}
 </style></head><body>
 <h2>Paper trading bot <span class="sub">(fake money)</span></h2>
 <div class="sub" id="status">Loading...</div>
 <div id="warn"></div>
+<div class="card"><div class="sub" style="margin-bottom:4px">Profit / loss through the day (Rs, after costs)</div>
+<canvas id="chart"></canvas><div class="legend" id="legend"></div></div>
 <div id="accts"></div>
 <h4>Recent activity</h4><ul id="ev"></ul>
 <p class="sub">Refreshes every 20 seconds. Fake money only. One day proves little.</p>
 <script>
 const TOPIC = "papertrade-data-03dc95b0c0fe";
+const COLORS = ["#60a5fa", "#f59e0b", "#c084fc", "#9ca3af"];
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const money = n => (n >= 0 ? "+" : "-") + "Rs " + Math.abs(Math.round(n)).toLocaleString("en-IN");
+const rs = n => "Rs " + Math.round(n).toLocaleString("en-IN");
+const money = n => (n >= 0 ? "+" : "-") + rs(Math.abs(n));
+const cls = n => n > 0 ? "pos" : n < 0 ? "neg" : "";
+const mins = t => { const [h, m, s] = t.split(":").map(Number); return h * 60 + m + (s || 0) / 60; };
 
-async function latest(since) {
+const seen = new Set();
+let all = [];
+let latest = null;
+let first = true;
+
+async function pull(since) {
   const r = await fetch("https://ntfy.sh/" + TOPIC + "/json?poll=1&since=" + since, {cache: "no-store"});
-  const lines = (await r.text()).trim().split("\n").filter(Boolean).map(l => JSON.parse(l)).filter(m => m.event === "message");
-  return lines.length ? lines[lines.length - 1] : null;
+  const txt = await r.text();
+  return txt.trim().split("\n").filter(Boolean)
+    .map(l => { try { return JSON.parse(l); } catch (e) { return null; } })
+    .filter(m => m && m.event === "message");
+}
+
+function ingest(m) {
+  if (seen.has(m.id)) return;
+  let d; try { d = JSON.parse(m.message); } catch (e) { return; }
+  if (!d || !d.accts) return;
+  seen.add(m.id);
+  m._d = d;
+  all.push(m);
+  if (!latest || m.time >= latest.time) latest = m;
+}
+
+function drawChart() {
+  const c = document.getElementById("chart");
+  const dpr = window.devicePixelRatio || 1;
+  const W = c.clientWidth || 600, H = c.clientHeight || 240;
+  c.width = W * dpr; c.height = H * dpr;
+  const g = c.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  const day = latest._d.d;
+  const pts = all.filter(m => m._d.d === day).sort((a, b) => a.time - b.time);
+  const n = latest._d.accts.length;
+  let lo = 0, hi = 0;
+  pts.forEach(m => m._d.accts.forEach(a => { lo = Math.min(lo, a.net); hi = Math.max(hi, a.net); }));
+  lo -= 20; hi += 20; if (hi - lo < 100) { lo -= 50; hi += 50; }
+  const L = 54, R = 8, T = 8, B = 22;
+  const X0 = 9 * 60 + 15, X1 = 15 * 60 + 30;
+  const x = t => L + (Math.min(Math.max(t, X0), X1) - X0) / (X1 - X0) * (W - L - R);
+  const y = v => T + (hi - v) / (hi - lo) * (H - T - B);
+  g.font = "11px system-ui"; g.fillStyle = "#9aa0aa"; g.strokeStyle = "#2a2e37"; g.lineWidth = 1;
+  [10, 11, 12, 13, 14, 15].forEach(h => {
+    const px = x(h * 60); g.beginPath(); g.moveTo(px, T); g.lineTo(px, H - B); g.stroke();
+    g.textAlign = "center"; g.fillText(h + ":00", px, H - 6);
+  });
+  g.textAlign = "right";
+  [lo + 20, 0, hi - 20].forEach(v => g.fillText(Math.round(v).toLocaleString("en-IN"), L - 6, y(v) + 4));
+  g.setLineDash([4, 4]); g.strokeStyle = "#6b7280"; g.beginPath(); g.moveTo(L, y(0)); g.lineTo(W - R, y(0)); g.stroke(); g.setLineDash([]);
+  for (let i = 0; i < n; i++) {
+    g.strokeStyle = COLORS[i % COLORS.length]; g.lineWidth = 2; g.beginPath();
+    let started = false;
+    pts.forEach(m => {
+      const a = m._d.accts[i]; if (!a) return;
+      const px = x(mins(m._d.t)), py = y(a.net);
+      if (!started) { g.moveTo(px, py); started = true; } else g.lineTo(px, py);
+    });
+    g.stroke();
+  }
+  document.getElementById("legend").innerHTML = latest._d.accts.map((a, i) =>
+    '<span><i style="background:' + COLORS[i % COLORS.length] + '"></i>' + esc(a.name) + '</span>').join("");
+}
+
+function card(a) {
+  const net = a.net;
+  let money_block = "";
+  if (a.spent !== undefined) {
+    const unreal = net - a.real;
+    money_block =
+      '<div class="grid">' +
+      '<div><span>Money in trades now</span>' + rs(a.inv) + '</div>' +
+      '<div><span>Cash left (of ' + rs(100000) + ')</span>' + rs(a.cash) + '</div>' +
+      '<div><span>Total spent on buys today</span>' + rs(a.spent) + '</div>' +
+      '<div><span>Total received from sells</span>' + rs(a.got) + '</div>' +
+      '<div><span>Profit booked (sold)</span><b class="' + cls(a.real) + '">' + money(a.real) + '</b></div>' +
+      '<div><span>Profit on open trades (not sold yet)</span><b class="' + cls(unreal) + '">' + money(unreal) + '</b></div></div>';
+  }
+  let holds = "";
+  if (a.pos && a.pos.length) {
+    holds = '<table><tr><th>Holding</th><th>Qty</th><th>Bought at</th><th>Now</th><th>P/L</th></tr>' +
+      a.pos.map(p => {
+        const pl = (p[3] - p[2]) * p[1];
+        return "<tr><td>" + esc(p[0]) + "</td><td>" + p[1] + "</td><td>" + p[2].toLocaleString("en-IN") +
+               "</td><td>" + p[3].toLocaleString("en-IN") + '</td><td class="' + cls(pl) + '">' + money(pl) + "</td></tr>";
+      }).join("") + "</table>";
+  } else if (a.held) {
+    holds = '<div class="sub" style="margin-top:8px">holding: ' + esc(a.held) + "</div>";
+  } else {
+    holds = '<div class="sub" style="margin-top:8px">holding nothing</div>';
+  }
+  return '<div class="card"><div class="row"><div><div class="name">' + esc(a.name) + '</div><div class="desc">' + esc(a.desc) +
+    '</div></div><div class="net ' + cls(net) + '">' + money(net) + '</div></div>' +
+    '<div class="sub" style="margin-top:6px">closed trades: ' + a.trades + (a.halt ? " &middot; stopped by loss limit" : "") + '</div>' +
+    money_block + holds + '</div>';
 }
 
 async function load() {
   try {
-    let m = await latest("latest");
-    if (!m) m = await latest("30m");
-    if (!m) { document.getElementById("status").textContent = "No data yet. Is the bot running?"; return; }
-    const d = JSON.parse(m.message);
-    const ageMin = (Date.now() / 1000 - m.time) / 60;
+    if (first) { (await pull("all")).forEach(ingest); first = false; }
+    (await pull("latest")).forEach(ingest);
+    if (!latest) { document.getElementById("status").textContent = "No data yet. Is the bot running?"; return; }
+    const d = latest._d;
+    const ageMin = (Date.now() / 1000 - latest.time) / 60;
     document.getElementById("status").innerHTML =
-      "<b>" + esc(d.phase) + "</b> &middot; live data " + d.fresh + "/" + d.n + " &middot; bot time " + esc(d.t) +
-      " &middot; " + esc(d.d);
+      "<b>" + esc(d.phase) + "</b> &middot; live data " + d.fresh + "/" + d.n + " &middot; bot time " + esc(d.t) + " &middot; " + esc(d.d);
     document.getElementById("warn").innerHTML = ageMin > 6
       ? '<div class="warn">Last update was ' + Math.round(ageMin) + ' min ago. The bot may have stopped, or the laptop is asleep/offline (or the day has finished).</div>' : "";
-    document.getElementById("accts").innerHTML = d.accts.map(a =>
-      '<div class="card"><div class="row"><div><div class="name">' + esc(a.name) + '</div><div class="desc">' + esc(a.desc) +
-      '</div></div><div class="net ' + (a.net > 0 ? "pos" : a.net < 0 ? "neg" : "") + '">' + money(a.net) + '</div></div>' +
-      '<div class="held">closed trades: ' + a.trades + ' &middot; holding: ' + esc(a.held || "nothing") +
-      (a.halt ? " &middot; stopped by loss limit" : "") + '</div></div>').join("");
+    document.getElementById("accts").innerHTML = d.accts.map(card).join("");
     document.getElementById("ev").innerHTML = (d.ev || []).slice().reverse().map(e => "<li>" + esc(e) + "</li>").join("") || "<li>nothing yet</li>";
+    drawChart();
   } catch (e) {
     document.getElementById("status").textContent = "Could not load data (" + e.message + "). Will retry.";
   }
 }
 load(); setInterval(load, 20000);
+window.addEventListener("resize", () => { if (latest) drawChart(); });
 </script></body></html>
